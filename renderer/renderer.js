@@ -157,7 +157,8 @@ function mountTool(item) {
   d.className = 'tool';
   const s = document.createElement('summary');
   s.innerHTML = '🔧 <span class="name"></span><span class="hint"></span>';
-  s.querySelector('.name').textContent = item.name;
+  const mcpName = /^mcp__(.+?)__(.+)$/.exec(item.name || '');
+  s.querySelector('.name').textContent = mcpName ? mcpName[1] + ' › ' + mcpName[2] : item.name;
   s.querySelector('.hint').textContent = item.hint || '';
   d.appendChild(s);
   const pre = document.createElement('pre');
@@ -363,6 +364,12 @@ function onEvent(ev) {
       if (ev.subtype === 'init') {
         if (ev.session_id) chat.sessionId = ev.session_id;
         if (ev.model) els.cliStatus.title = 'Модель: ' + ev.model;
+        for (const s of ev.mcp_servers || []) {
+          const prefix = 'mcp__' + s.name + '__';
+          const tools = (ev.tools || []).filter(t => typeof t === 'string' && t.startsWith(prefix)).length;
+          mcp.status.set(s.name, { status: s.status, tools });
+        }
+        renderMcp();
       }
       break;
     case 'stream_event':
@@ -611,6 +618,259 @@ window.api.onLogin(ev => {
   }
 });
 
+// ---------- MCP servers ----------
+const mg = {
+  modal: $('mcpModal'), list: $('mcpList'), empty: $('mcpEmpty'), msg: $('mcpMsg'), cli: $('mcpCli'),
+  form: $('mcpForm'), imp: $('mcpImport'), link: $('mcpLinkBtn'),
+  name: $('fName'), type: $('fType'), command: $('fCommand'), args: $('fArgs'), env: $('fEnv'),
+  url: $('fUrl'), headers: $('fHeaders'), stdio: $('fStdio'), remote: $('fRemote'), importText: $('importText')
+};
+const mcp = { cfg: { servers: [], useCliServers: true }, status: new Map(), editing: null, oauth: {}, pending: null, oauthUrl: null };
+els.mcpBtn = $('mcpBtn');
+
+function mcpMsg(text, bad) {
+  mg.msg.className = 'status' + (text ? (bad ? ' bad' : ' ok') : '');
+  mg.msg.textContent = text || '';
+}
+
+function updateMcpBtn() {
+  const n = mcp.cfg.servers.filter(s => s.enabled).length;
+  els.mcpBtn.textContent = '🔌 MCP' + (n ? ' · ' + n : '');
+}
+
+async function loadMcp() {
+  mcp.cfg = await window.api.mcpGet();
+  mcp.oauth = await window.api.oauthStatus();
+  updateMcpBtn();
+  renderMcp();
+}
+
+async function saveMcp() {
+  mcp.cfg = await window.api.mcpSave(mcp.cfg);
+  mcp.oauth = await window.api.oauthStatus();
+  updateMcpBtn();
+  renderMcp();
+}
+
+async function refreshOauth() {
+  mcp.oauth = await window.api.oauthStatus();
+  renderMcp();
+}
+
+async function startOauth(s) {
+  mcp.pending = s.name;
+  mcp.oauthUrl = null;
+  mg.link.hidden = true;
+  mcpMsg('Открываю браузер для входа в «' + s.name + '»…');
+  renderMcp();
+  const r = await window.api.oauthLogin(s.name);
+  mcp.pending = null;
+  mg.link.hidden = true;
+  if (r.ok) {
+    mcp.status.delete(s.name);
+    mcpMsg('Вход в «' + s.name + '» выполнен. Сервер подключится при следующем сообщении.');
+  } else {
+    mcpMsg('Не удалось войти: ' + r.error, true);
+  }
+  await refreshOauth();
+}
+
+window.api.onOauth(ev => {
+  if (ev.type === 'url') {
+    mcp.oauthUrl = ev.url;
+    mg.link.hidden = false;
+    mcpMsg('Жду подтверждения входа в браузере… Если страница не открылась — скопируйте ссылку.');
+  }
+});
+
+function mcpSummary(s) {
+  return s.type === 'stdio' ? [s.command, ...(s.args || [])].join(' ') : s.type + ' · ' + s.url;
+}
+
+function renderMcp() {
+  mg.cli.checked = mcp.cfg.useCliServers;
+  mg.list.textContent = '';
+  mg.empty.hidden = mcp.cfg.servers.length > 0;
+  for (const s of mcp.cfg.servers) {
+    const row = document.createElement('div');
+    row.className = 'mcp-row' + (s.enabled ? '' : ' off');
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = s.enabled;
+    cb.title = 'Включить / выключить';
+    cb.onchange = () => { s.enabled = cb.checked; saveMcp(); };
+
+    const info = document.createElement('div');
+    info.className = 'info';
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.textContent = s.name;
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.textContent = mcpSummary(s);
+    sub.title = mcpSummary(s);
+    info.append(nm, sub);
+
+    const remote = s.type !== 'stdio';
+    const signedIn = remote && !!mcp.oauth[s.name];
+    const waiting = mcp.pending === s.name;
+
+    const badge = document.createElement('span');
+    const st = mcp.status.get(s.name);
+    badge.className = 'badge';
+    if (waiting) badge.textContent = 'ожидаю вход в браузере…';
+    else if (!s.enabled) badge.textContent = 'выключен';
+    else if (!st) badge.textContent = signedIn ? 'вход выполнен · подключится при следующем сообщении' : 'подключится при следующем сообщении';
+    else if (st.status === 'connected') { badge.classList.add('ok'); badge.textContent = 'подключён · ' + st.tools + ' инстр.'; }
+    else if (st.status === 'needs-auth') { badge.classList.add('bad'); badge.textContent = signedIn ? 'нужно войти заново' : 'нужен вход'; }
+    else { badge.classList.add('bad'); badge.textContent = st.status; }
+
+    let auth = null;
+    if (remote) {
+      auth = document.createElement('button');
+      if (waiting) {
+        auth.textContent = 'Отмена';
+        auth.onclick = () => window.api.oauthCancel();
+      } else if (signedIn) {
+        auth.textContent = 'Выйти';
+        auth.title = 'Забыть вход (OAuth)';
+        auth.onclick = async () => { await window.api.oauthLogout(s.name); mcp.status.delete(s.name); mcpMsg(''); await refreshOauth(); };
+      } else {
+        auth.textContent = 'Войти (OAuth)';
+        auth.title = 'Открыть браузер и войти в аккаунт сервера';
+        auth.className = 'primary';
+        auth.onclick = () => startOauth(s);
+        if (mcp.pending) auth.disabled = true;
+      }
+    }
+
+    const edit = document.createElement('button');
+    edit.textContent = 'Изменить';
+    edit.onclick = () => openMcpForm(s);
+    const del = document.createElement('button');
+    del.textContent = '✕';
+    del.title = 'Удалить';
+    del.onclick = () => {
+      if (!confirm('Удалить MCP-сервер «' + s.name + '»?')) return;
+      mcp.cfg.servers = mcp.cfg.servers.filter(x => x !== s);
+      saveMcp();
+    };
+
+    row.append(cb, info, badge);
+    if (auth) row.append(auth);
+    row.append(edit, del);
+    mg.list.appendChild(row);
+  }
+}
+
+function toggleFormType() {
+  const stdio = mg.type.value === 'stdio';
+  mg.stdio.hidden = !stdio;
+  mg.remote.hidden = stdio;
+}
+
+function openMcpForm(s) {
+  mg.imp.hidden = true;
+  mg.form.hidden = false;
+  mcp.editing = s ? s.name : null;
+  mg.name.value = s ? s.name : '';
+  mg.type.value = s ? s.type : 'stdio';
+  mg.command.value = (s && s.command) || '';
+  mg.args.value = ((s && s.args) || []).join('\n');
+  mg.env.value = Object.entries((s && s.env) || {}).map(([k, v]) => k + '=' + v).join('\n');
+  mg.url.value = (s && s.url) || '';
+  mg.headers.value = Object.entries((s && s.headers) || {}).map(([k, v]) => k + ': ' + v).join('\n');
+  toggleFormType();
+  mcpMsg('');
+  mg.name.focus();
+}
+
+const lines = t => t.split('\n').map(x => x.trim()).filter(Boolean);
+function parseMap(text, sep) {
+  const out = {};
+  for (const line of lines(text)) {
+    const i = line.indexOf(sep);
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + sep.length).trim();
+  }
+  return out;
+}
+
+async function saveMcpForm() {
+  const name = mg.name.value.trim();
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(name)) { mcpMsg('Название: только латиница, цифры, _ и - (до 40 символов)', true); return; }
+  if (name !== mcp.editing && mcp.cfg.servers.some(s => s.name === name)) { mcpMsg('Сервер с таким названием уже есть', true); return; }
+  const type = mg.type.value;
+  const s = { name, type, enabled: true };
+  if (type === 'stdio') {
+    s.command = mg.command.value.trim();
+    if (!s.command) { mcpMsg('Укажите команду', true); return; }
+    s.args = lines(mg.args.value);
+    s.env = parseMap(mg.env.value, '=');
+  } else {
+    s.url = mg.url.value.trim();
+    if (!/^https?:\/\//i.test(s.url)) { mcpMsg('URL должен начинаться с http:// или https://', true); return; }
+    s.headers = parseMap(mg.headers.value, ':');
+  }
+  const idx = mcp.cfg.servers.findIndex(x => x.name === mcp.editing);
+  if (idx >= 0) { s.enabled = mcp.cfg.servers[idx].enabled; mcp.cfg.servers[idx] = s; if (mcp.editing !== name) mcp.status.delete(mcp.editing); }
+  else mcp.cfg.servers.push(s);
+  mg.form.hidden = true;
+  await saveMcp();
+  mcpMsg('Сохранено. Подключится при следующем сообщении.');
+}
+
+// Accepts {"mcpServers": {...}}, {"servers": {...}} or a bare {name: {...}} map (as in MCP docs).
+async function importMcp() {
+  let data;
+  try { data = JSON.parse(mg.importText.value); } catch { mcpMsg('Это не корректный JSON', true); return; }
+  const map = (data && (data.mcpServers || data.servers)) || data;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) { mcpMsg('Не нашёл список серверов', true); return; }
+  let added = 0, skipped = 0;
+  for (const [name, d] of Object.entries(map)) {
+    if (!d || typeof d !== 'object' || !/^[A-Za-z0-9_-]{1,40}$/.test(name)) { skipped++; continue; }
+    const type = d.url ? (/sse/i.test(d.type || '') ? 'sse' : 'http') : 'stdio';
+    const s = { name, type, enabled: true };
+    if (type === 'stdio') {
+      if (!d.command) { skipped++; continue; }
+      s.command = String(d.command);
+      s.args = Array.isArray(d.args) ? d.args.map(String) : [];
+      s.env = d.env && typeof d.env === 'object' ? d.env : {};
+    } else {
+      s.url = String(d.url);
+      s.headers = d.headers && typeof d.headers === 'object' ? d.headers : {};
+    }
+    const idx = mcp.cfg.servers.findIndex(x => x.name === name);
+    if (idx >= 0) mcp.cfg.servers[idx] = s; else mcp.cfg.servers.push(s);
+    added++;
+  }
+  mg.importText.value = '';
+  mg.imp.hidden = true;
+  await saveMcp();
+  mcpMsg(added ? `Добавлено серверов: ${added}` + (skipped ? `, пропущено: ${skipped}` : '') : 'Ничего не добавлено', !added);
+}
+
+function openMcp() { mg.modal.hidden = false; mcpMsg(''); renderMcp(); }
+function closeMcp() { mg.modal.hidden = true; mg.form.hidden = true; mg.imp.hidden = true; }
+
+els.mcpBtn.onclick = openMcp;
+$('mcpClose').onclick = closeMcp;
+mg.modal.addEventListener('mousedown', e => { if (e.target === mg.modal) closeMcp(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !mg.modal.hidden) closeMcp(); });
+$('mcpAdd').onclick = () => openMcpForm(null);
+$('mcpImportBtn').onclick = () => { mg.form.hidden = true; mg.imp.hidden = false; mcpMsg(''); mg.importText.focus(); };
+$('fSave').onclick = saveMcpForm;
+$('fCancel').onclick = () => { mg.form.hidden = true; mcpMsg(''); };
+$('importGo').onclick = importMcp;
+$('importCancel').onclick = () => { mg.imp.hidden = true; mcpMsg(''); };
+mg.type.onchange = toggleFormType;
+mg.cli.onchange = () => { mcp.cfg.useCliServers = mg.cli.checked; saveMcp(); };
+mg.link.onclick = async () => {
+  if (!mcp.oauthUrl) return;
+  try { await navigator.clipboard.writeText(mcp.oauthUrl); mcpMsg('Ссылка скопирована — откройте её в браузере.'); }
+  catch { mcpMsg('Не удалось скопировать ссылку', true); }
+};
+
 // ---------- wiring ----------
 els.send.onclick = submit;
 els.stop.onclick = () => window.api.stop();
@@ -650,5 +910,6 @@ window.api.onDone(({ code, stderr }) => {
   setCwdLabel(chat.cwd);
   refreshList();
   refreshCli();
+  loadMcp();
   els.input.focus();
 })();

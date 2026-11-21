@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn, execFileSync } = require('child_process');
+const oauth = require('./oauth');
 
 app.setName('Mark Desk');
 
@@ -61,6 +62,115 @@ ipcMain.handle('history:delete', (_e, id) => {
   if (!validId(id)) return false;
   try { fs.unlinkSync(historyFile(id)); return true; } catch { return false; }
 });
+
+// ---------- MCP servers (own list, passed to the CLI via --mcp-config on every run) ----------
+const mcpFile = () => path.join(app.getPath('userData'), 'mcp.json');
+const mcpRunFile = () => path.join(app.getPath('userData'), 'mcp-run.json');
+
+function strMap(o) {
+  const r = {};
+  if (o && typeof o === 'object') {
+    for (const [k, v] of Object.entries(o)) if (k && typeof v === 'string') r[k] = v;
+  }
+  return r;
+}
+
+function sanitizeServer(s) {
+  if (!s || typeof s !== 'object') return null;
+  const name = String(s.name || '').trim();
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(name)) return null;
+  const type = ['stdio', 'http', 'sse'].includes(s.type) ? s.type : 'stdio';
+  const out = { name, type, enabled: s.enabled !== false };
+  if (type === 'stdio') {
+    const command = String(s.command || '').trim();
+    if (!command) return null;
+    out.command = command;
+    out.args = Array.isArray(s.args) ? s.args.map(String) : [];
+    out.env = strMap(s.env);
+  } else {
+    const url = String(s.url || '').trim();
+    if (!/^https?:\/\//i.test(url)) return null;
+    out.url = url;
+    out.headers = strMap(s.headers);
+  }
+  return out;
+}
+
+function sanitizeMcp(j) {
+  const seen = new Set();
+  const servers = [];
+  for (const s of (j && Array.isArray(j.servers) ? j.servers : [])) {
+    const c = sanitizeServer(s);
+    if (c && !seen.has(c.name)) { seen.add(c.name); servers.push(c); }
+  }
+  return { servers, useCliServers: !(j && j.useCliServers === false) };
+}
+
+function loadMcp() {
+  try { return sanitizeMcp(JSON.parse(fs.readFileSync(mcpFile(), 'utf8').replace(/^﻿/, ''))); }
+  catch { return { servers: [], useCliServers: true }; }
+}
+
+ipcMain.handle('mcp:get', () => loadMcp());
+ipcMain.handle('mcp:save', (_e, cfg) => {
+  const clean = sanitizeMcp(cfg);
+  try { oauth.prune(clean.servers.filter(s => s.type !== 'stdio')); } catch {}
+  try {
+    fs.mkdirSync(path.dirname(mcpFile()), { recursive: true });
+    fs.writeFileSync(mcpFile(), JSON.stringify(clean, null, 2), { mode: 0o600 });
+  } catch {}
+  return clean;
+});
+
+// ---------- MCP OAuth (sign in to remote servers such as Higgsfield) ----------
+ipcMain.handle('oauth:status', () => oauth.statusFor(loadMcp().servers.filter(s => s.type !== 'stdio')));
+
+ipcMain.handle('oauth:login', async (_e, name) => {
+  const s = loadMcp().servers.find(x => x.name === name && x.type !== 'stdio');
+  if (!s) return { ok: false, error: 'Удалённый сервер не найден' };
+  try {
+    await oauth.login(name, s.url, {
+      openExternal: u => shell.openExternal(u),
+      onUrl: u => { if (win && !win.isDestroyed()) win.webContents.send('oauth:event', { name, type: 'url', url: u }); }
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('oauth:cancel', () => oauth.cancel());
+ipcMain.handle('oauth:logout', (_e, name) => { oauth.logout(String(name)); return true; });
+
+// Extra CLI args that hook the enabled servers into a run. Must be appended LAST (variadic flags).
+async function buildMcpArgs() {
+  const cfg = loadMcp();
+  const active = cfg.servers.filter(s => s.enabled);
+  if (!active.length && cfg.useCliServers) return [];
+  const mcpServers = {};
+  for (const s of active) {
+    if (s.type === 'stdio') {
+      mcpServers[s.name] = { type: 'stdio', command: s.command, args: s.args, env: s.env };
+      continue;
+    }
+    // Remote server: add the OAuth access token (refreshing it if needed) unless the user set their own header.
+    const headers = { ...s.headers };
+    if (!Object.keys(headers).some(k => k.toLowerCase() === 'authorization')) {
+      const token = await oauth.getAccessToken(s.name, s.url).catch(() => null);
+      if (token) headers.Authorization = 'Bearer ' + token;
+    }
+    mcpServers[s.name] = { type: s.type, url: s.url, headers };
+  }
+  try {
+    fs.mkdirSync(path.dirname(mcpRunFile()), { recursive: true });
+    fs.writeFileSync(mcpRunFile(), JSON.stringify({ mcpServers }), { mode: 0o600 });
+  } catch { return []; }
+  const args = ['--mcp-config', mcpRunFile()];
+  if (!cfg.useCliServers) args.push('--strict-mcp-config');
+  // Non-interactive runs cannot ask, so servers the user switched on are pre-approved.
+  if (active.length) args.push('--allowedTools', active.map(s => 'mcp__' + s.name).join(','));
+  return args;
+}
 
 // ---------- locating the claude CLI ----------
 function cmp(a, b) {
@@ -271,7 +381,7 @@ function killCurrent() {
   } catch {}
 }
 
-ipcMain.handle('claude:send', (_e, opts) => {
+ipcMain.handle('claude:send', async (_e, opts) => {
   if (current) return { ok: false, error: 'Уже выполняется запрос' };
   const cli = findClaude();
   if (!cli) return { ok: false, error: 'Claude CLI не найден' };
@@ -284,6 +394,8 @@ ipcMain.handle('claude:send', (_e, opts) => {
   args.push('--permission-mode', MODES.has(permissionMode) ? permissionMode : 'acceptEdits');
   if (model && /^[\w.\-\[\]]+$/.test(model)) args.push('--model', model);
   if (sessionId && /^[0-9a-f-]{36}$/i.test(sessionId)) args.push('--resume', sessionId);
+  args.push(...(await buildMcpArgs())); // keep last: --mcp-config/--allowedTools accept multiple values
+  if (current) return { ok: false, error: 'Уже выполняется запрос' }; // another send won the race while tokens refreshed
 
   const child = spawn(cli, args, {
     cwd,

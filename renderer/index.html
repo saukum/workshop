@@ -24,6 +24,7 @@
       <option value="bypassPermissions">Всё без вопросов ⚠</option>
     </select>
     <span class="spacer"></span>
+    <button id="mcpBtn" class="chip" title="MCP-серверы">🔌 MCP</button>
     <span id="cliStatus" class="status"></span>
     <button id="newChat" class="chip">＋ Новый чат</button>
   </header>
@@ -71,6 +72,62 @@
         <button id="sendBtn" class="primary">Отправить</button>
         <button id="stopBtn" class="danger" hidden>Стоп</button>
       </footer>
+    </div>
+  </div>
+
+  <div id="mcpModal" class="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head"><b>MCP-серверы</b><button id="mcpClose" title="Закрыть">✕</button></div>
+      <p class="modal-hint">
+        MCP-серверы дают Claude дополнительные инструменты (файлы, базы, браузер, сервисы). Включённые серверы
+        подключаются при следующем сообщении. Сервер типа stdio запускает программу на вашем компьютере —
+        подключайте только то, чему доверяете. Токены хранятся открытым текстом в папке данных Mark Desk.
+      </p>
+
+      <div id="mcpList" class="mcp-list"></div>
+      <div id="mcpEmpty" class="side-empty">Серверов пока нет.</div>
+
+      <div class="modal-actions">
+        <button id="mcpAdd" class="primary">＋ Добавить сервер</button>
+        <button id="mcpImportBtn">Импорт из JSON</button>
+      </div>
+
+      <div id="mcpForm" class="mcp-form" hidden>
+        <div class="form-row"><label>Название</label><input id="fName" type="text" placeholder="например: files" autocomplete="off" spellcheck="false"></div>
+        <div class="form-row"><label>Тип</label>
+          <select id="fType">
+            <option value="stdio">stdio — локальная программа</option>
+            <option value="http">http — удалённый сервер</option>
+            <option value="sse">sse — удалённый сервер (SSE)</option>
+          </select>
+        </div>
+        <div id="fStdio">
+          <div class="form-row"><label>Команда</label><input id="fCommand" type="text" placeholder="npx  или  node  или  C:\путь\server.exe" autocomplete="off" spellcheck="false"></div>
+          <div class="form-row"><label>Аргументы</label><textarea id="fArgs" rows="3" placeholder="по одному на строку" spellcheck="false"></textarea></div>
+          <div class="form-row"><label>Переменные</label><textarea id="fEnv" rows="2" placeholder="KEY=значение (по одной на строку)" spellcheck="false"></textarea></div>
+        </div>
+        <div id="fRemote" hidden>
+          <div class="form-row"><label>URL</label><input id="fUrl" type="text" placeholder="https://example.com/mcp" autocomplete="off" spellcheck="false"></div>
+          <div class="form-row"><label>Заголовки</label><textarea id="fHeaders" rows="2" placeholder="Authorization: Bearer … (по одному на строку)" spellcheck="false"></textarea></div>
+        </div>
+        <div class="modal-actions">
+          <button id="fSave" class="primary">Сохранить</button>
+          <button id="fCancel">Отмена</button>
+        </div>
+      </div>
+
+      <div id="mcpImport" class="mcp-form" hidden>
+        <div class="form-row"><label>JSON</label>
+          <textarea id="importText" rows="7" placeholder='{ "mcpServers": { "name": { "command": "npx", "args": ["-y", "pkg"] } } }' spellcheck="false"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button id="importGo" class="primary">Импортировать</button>
+          <button id="importCancel">Отмена</button>
+        </div>
+      </div>
+
+      <label class="check"><input type="checkbox" id="mcpCli"> Также использовать серверы, настроенные в самом Claude CLI</label>
+      <div class="msg-row"><div id="mcpMsg" class="status"></div><button id="mcpLinkBtn" hidden>Скопировать ссылку входа</button></div>
     </div>
   </div>
 
