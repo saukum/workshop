@@ -1,0 +1,14 @@
+{
+  "name": "mark-desk",
+  "productName": "Mark Desk",
+  "version": "0.2.0",
+  "description": "Mark Desk — custom Electron interface for the Claude Code CLI with its own chat history",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

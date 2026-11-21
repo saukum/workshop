@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mark Desk</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">Mark Desk</div>
+    <button id="folderBtn" class="chip" title="Папка проекта">📁 <span id="folderLabel">выбрать папку…</span></button>
+    <select id="model" title="Модель">
+      <option value="">Модель по умолчанию</option>
+      <option value="opus">Opus</option>
+      <option value="sonnet">Sonnet</option>
+      <option value="haiku">Haiku</option>
+    </select>
+    <select id="mode" title="Права на действия">
+      <option value="default">Спрашивать (только чтение)</option>
+      <option value="acceptEdits" selected>Разрешать правки</option>
+      <option value="plan">Только план</option>
+      <option value="bypassPermissions">Всё без вопросов ⚠</option>
+    </select>
+    <span class="spacer"></span>
+    <span id="cliStatus" class="status"></span>
+    <button id="newChat" class="chip">＋ Новый чат</button>
+  </header>
+
+  <div id="banner" class="banner" hidden>
+    <span id="bannerText"></span>
+    <button id="bannerBtn" class="primary"></button>
+  </div>
+
+  <section id="loginPanel" class="login" hidden>
+    <div class="login-title">Вход в аккаунт Claude</div>
+    <ol>
+      <li>Откройте страницу входа (браузер мог открыться сам) и подтвердите доступ.</li>
+      <li>Обычно вход завершится автоматически. Если браузер показал код или ошибку <code>localhost</code> — вставьте код или весь адрес из адресной строки сюда:</li>
+    </ol>
+    <div class="login-row">
+      <button id="loginOpen" class="primary" disabled>Открыть страницу входа</button>
+      <button id="loginCopy" disabled>Скопировать ссылку</button>
+      <span id="loginState" class="status">запускаю вход…</span>
+    </div>
+    <div class="login-row">
+      <input id="loginCode" type="text" placeholder="Код или адрес вида http://localhost:…/callback?code=…" autocomplete="off" spellcheck="false">
+      <button id="loginSend" class="primary">Отправить</button>
+      <button id="loginCancel">Отмена</button>
+    </div>
+  </section>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="side-title">История</div>
+      <div id="chatList" class="chat-list"></div>
+      <div id="chatListEmpty" class="side-empty">Пока пусто. Ваши чаты сохраняются здесь, на этом компьютере.</div>
+    </aside>
+
+    <div class="chatcol">
+      <main id="messages" class="messages">
+        <div id="empty" class="empty">
+          <h1>О чём поработаем?</h1>
+          <p>Выберите папку проекта и напишите задачу. Под капотом работает ваш Claude Code CLI, а история чатов хранится в Mark Desk.</p>
+        </div>
+      </main>
+
+      <footer class="composer">
+        <textarea id="input" rows="1" placeholder="Напишите сообщение… (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+        <button id="sendBtn" class="primary">Отправить</button>
+        <button id="stopBtn" class="danger" hidden>Стоп</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
